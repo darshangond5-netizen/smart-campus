@@ -1,1341 +1,789 @@
+
 import "./style.css";
+import { auth, db } from "./firebase.js";
+import {
+  setPersistence, inMemoryPersistence, signInWithEmailAndPassword,
+  signOut, onAuthStateChanged
+} from "firebase/auth";
+import { doc, getDoc } from "firebase/firestore";
 
-/* =========================================
-   CURSOR GLOW
-========================================= */
-const glow = document.getElementById("cursor-glow");
-let mouseX = 0, mouseY = 0, glowX = 0, glowY = 0;
-
-if (glow) {
-  document.addEventListener("mousemove", e => {
-    mouseX = e.clientX;
-    mouseY = e.clientY;
-  });
-
-  (function animateGlow() {
-    glowX += (mouseX - glowX) * 0.12;
-    glowY += (mouseY - glowY) * 0.12;
-    glow.style.left = glowX + "px";
-    glow.style.top = glowY + "px";
-    requestAnimationFrame(animateGlow);
-  })();
-}
-
-/* =========================================
-   FLOATING PARTICLES
-========================================= */
-const canvas = document.getElementById("particles");
-const ctx = canvas?.getContext("2d");
-let particles = [];
-
-function resizeCanvas() {
-  if (!canvas) return;
-  canvas.width = window.innerWidth;
-  canvas.height = window.innerHeight;
-}
-
-window.addEventListener("resize", resizeCanvas);
-resizeCanvas();
-
-function createParticles(count = 60) {
-  if (!canvas) return;
-
-  particles = [];
-
-  for (let i = 0; i < count; i++) {
-    particles.push({
-      x: Math.random() * canvas.width,
-      y: Math.random() * canvas.height,
-      vx: (Math.random() - 0.5) * 0.3,
-      vy: (Math.random() - 0.5) * 0.3,
-      size: Math.random() * 2 + 0.5,
-      alpha: Math.random() * 0.4 + 0.1
-    });
-  }
-}
-
-createParticles();
-
-(function drawParticles() {
-  if (!ctx || !canvas) return;
-
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-  for (const p of particles) {
-    p.x += p.vx;
-    p.y += p.vy;
-
-    if (p.x < 0) p.x = canvas.width;
-    if (p.x > canvas.width) p.x = 0;
-    if (p.y < 0) p.y = canvas.height;
-    if (p.y > canvas.height) p.y = 0;
-
-    const dx = p.x - mouseX;
-    const dy = p.y - mouseY;
-    const dist = Math.sqrt(dx * dx + dy * dy);
-    const brightness = dist < 200 ? 1 - dist / 200 : 0;
-
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, p.size + brightness * 2, 0, Math.PI * 2);
-    ctx.fillStyle = `rgba(129,140,248,${p.alpha + brightness * 0.5})`;
-    ctx.fill();
-  }
-
-  for (let i = 0; i < particles.length; i++) {
-    for (let j = i + 1; j < particles.length; j++) {
-      const dx = particles[i].x - particles[j].x;
-      const dy = particles[i].y - particles[j].y;
-      const d = Math.sqrt(dx * dx + dy * dy);
-
-      if (d < 120) {
-        ctx.beginPath();
-        ctx.moveTo(particles[i].x, particles[i].y);
-        ctx.lineTo(particles[j].x, particles[j].y);
-        ctx.strokeStyle = `rgba(99,102,241,${0.06 * (1 - d / 120)})`;
-        ctx.lineWidth = 0.5;
-        ctx.stroke();
-      }
-    }
-  }
-
-  requestAnimationFrame(drawParticles);
-})();
-
-/* =========================================
-   CAMPUS ROOM DATA
-========================================= */
-
+/* CAMPUS INVENTORY */
 const floors = [
-  {
-    name: "Ground",
-    classrooms: ["LH001","LH002","LH003","LH004","LH005","LH006","LH007","LH008","LH009"],
-    labs: ["LAB001","LAB002","LAB003"],
-    seminars: ["SH001","SH002"]
-  },
-  {
-    name: "First",
-    classrooms: ["LH101","LH102","LH103","LH104","LH105","LH106","LH107","LH108"],
-    labs: ["LAB101","LAB102","LAB103"],
-    seminars: []
-  },
-  {
-    name: "Second",
-    classrooms: ["LH201","LH202","LH203","LH204","LH205","LH206","LH207"],
-    labs: ["LAB201","LAB202","LAB203","LAB204"],
-    seminars: []
-  },
-  {
-    name: "Third",
-    classrooms: ["LH301","LH302","LH303","LH304","LH305","LH306","LH307"],
-    labs: ["LAB301","LAB302","LAB303","LAB304"],
-    seminars: []
-  }
+ {name:"Ground",classrooms:["LH001","LH002","LH003","LH004","LH005","LH006","LH007","LH008","LH009"],labs:["LAB001","LAB002","LAB003"],seminars:["SH001","SH002"]},
+ {name:"First",classrooms:["LH101","LH102","LH103","LH104","LH105","LH106","LH107","LH108"],labs:["LAB101","LAB102","LAB103"],seminars:[]},
+ {name:"Second",classrooms:["LH201","LH202","LH203","LH204","LH205","LH206","LH207"],labs:["LAB201","LAB202","LAB203","LAB204"],seminars:[]},
+ {name:"Third",classrooms:["LH301","LH302","LH303","LH304","LH305","LH306","LH307"],labs:["LAB301","LAB302","LAB303","LAB304"],seminars:[]}
 ];
 
-const allRooms = floors.flatMap(f => [
-  ...f.classrooms,
-  ...f.labs,
-  ...f.seminars
-]);
+const allRooms=floors.flatMap(f=>[...f.classrooms,...f.labs,...f.seminars]);
+const roomFloor=Object.fromEntries(floors.flatMap(f=>[...f.classrooms,...f.labs,...f.seminars].map(r=>[r,f.name])));
+const roomType=Object.fromEntries(floors.flatMap(f=>[
+ ...f.classrooms.map(r=>[r,"Classroom"]),
+ ...f.labs.map(r=>[r,"Laboratory"]),
+ ...f.seminars.map(r=>[r,"Seminar Hall"])
+]));
+const roomCapacity=Object.fromEntries(allRooms.map(r=>[r,r.startsWith("SH")?100:r.startsWith("LAB")?36:60]));
 
-const roomFloor = Object.fromEntries(
-  floors.flatMap(f =>
-    [...f.classrooms, ...f.labs, ...f.seminars]
-      .map(r => [r, f.name])
-  )
-);
+const days=["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
 
-const roomType = Object.fromEntries(
-  floors.flatMap(f => [
-    ...f.classrooms.map(r => [r, "Classroom"]),
-    ...f.labs.map(r => [r, "Laboratory"]),
-    ...f.seminars.map(r => [r, "Seminar Hall"])
-  ])
-);
-
-const roomCapacity = Object.fromEntries(
-  allRooms.map(r => [
-    r,
-    r.startsWith("SH") ? 100 :
-    r.startsWith("LAB") ? 36 : 60
-  ])
-);
-
-/* =========================================
-   TIMETABLE DATA
-========================================= */
-
-const days = [
-  "Monday",
-  "Tuesday",
-  "Wednesday",
-  "Thursday",
-  "Friday",
-  "Saturday"
+const periods=[
+ {label:"09:00 – 10:00",start:"09:00",end:"10:00"},
+ {label:"10:00 – 11:00",start:"10:00",end:"11:00"},
+ {label:"11:20 – 12:20",start:"11:20",end:"12:20"},
+ {label:"12:20 – 13:15",start:"12:20",end:"13:15"},
+ {label:"14:10 – 15:00",start:"14:10",end:"15:00"},
+ {label:"15:00 – 15:50",start:"15:00",end:"15:50"},
+ {label:"15:50 – 16:40",start:"15:50",end:"16:40"}
 ];
 
-const periods = [
-  { label: "09:00 – 10:00", start: "09:00", end: "10:00" },
-  { label: "10:00 – 11:00", start: "10:00", end: "11:00" },
-  { label: "11:20 – 12:20", start: "11:20", end: "12:20" },
-  { label: "12:20 – 13:15", start: "12:20", end: "13:15" },
-  { label: "14:10 – 15:00", start: "14:10", end: "15:00" },
-  { label: "15:00 – 15:50", start: "15:00", end: "15:50" },
-  { label: "15:50 – 16:40", start: "15:50", end: "16:40" }
-];
-
-const years = {
-  1: {
-    floor: "Ground",
-    subjects: [
-      "Engineering Mathematics I",
-      "Engineering Physics",
-      "Engineering Chemistry",
-      "Programming in C",
-      "Basic Electrical Engineering",
-      "Engineering Graphics",
-      "Communicative English",
-      "Environmental Studies"
-    ],
-    labs: [
-      "Physics Lab",
-      "Chemistry Lab",
-      "C Programming Lab",
-      "Engineering Workshop"
-    ]
-  },
-
-  2: {
-    floor: "First",
-    subjects: [
-      "Engineering Mathematics III",
-      "Data Structures",
-      "Digital Logic Design",
-      "Computer Organization",
-      "Object Oriented Programming",
-      "Discrete Mathematics",
-      "Operating Systems",
-      "Database Management Systems"
-    ],
-    labs: [
-      "Data Structures Lab",
-      "OOP Lab",
-      "Digital Logic Lab",
-      "Database Lab"
-    ]
-  },
-
-  3: {
-    floor: "Second",
-    subjects: [
-      "Design and Analysis of Algorithms",
-      "Computer Networks",
-      "Software Engineering",
-      "Theory of Computation",
-      "Web Technology",
-      "Artificial Intelligence",
-      "Microprocessors",
-      "Professional Elective"
-    ],
-    labs: [
-      "Networks Lab",
-      "Web Technology Lab",
-      "AI Lab",
-      "Mini Project"
-    ]
-  },
-
-  4: {
-    floor: "Third",
-    subjects: [
-      "Machine Learning",
-      "Cloud Computing",
-      "Cyber Security",
-      "Big Data Analytics",
-      "Project Work",
-      "Internet of Things",
-      "Professional Elective II",
-      "Research / Seminar"
-    ],
-    labs: [
-      "Machine Learning Lab",
-      "Cloud Lab",
-      "IoT Lab",
-      "Project Lab"
-    ]
-  }
+const years={
+ 1:{floor:"Ground",subjects:["Engineering Mathematics I","Engineering Physics","Engineering Chemistry","Programming in C","Basic Electrical Engineering","Engineering Graphics","Communicative English","Environmental Studies"],labs:["Physics Lab","Chemistry Lab","C Programming Lab","Engineering Workshop"]},
+ 2:{floor:"First",subjects:["Engineering Mathematics III","Data Structures","Digital Logic Design","Computer Organization","Object Oriented Programming","Discrete Mathematics","Operating Systems","Database Management Systems"],labs:["Data Structures Lab","OOP Lab","Digital Logic Lab","Database Lab"]},
+ 3:{floor:"Second",subjects:["Design and Analysis of Algorithms","Computer Networks","Software Engineering","Theory of Computation","Web Technology","Artificial Intelligence","Microprocessors","Professional Elective"],labs:["Networks Lab","Web Technology Lab","AI Lab","Mini Project"]},
+ 4:{floor:"Third",subjects:["Machine Learning","Cloud Computing","Cyber Security","Big Data Analytics","Project Work","Internet of Things","Professional Elective II","Research / Seminar"],labs:["Machine Learning Lab","Cloud Lab","IoT Lab","Project Lab"]}
 };
 
-const sections = ["A", "B", "C", "D"];
-const timetable = {};
-const sectionRoom = {};
+const sections=["A","B","C","D"];
+const timetable={};
+const sectionRoom={};
 
-for (const [yr, info] of Object.entries(years)) {
-  const rooms = floors.find(f => f.name === info.floor).classrooms;
+for(const [yr,info] of Object.entries(years)){
+ const rooms=floors.find(f=>f.name===info.floor).classrooms;
 
-  sections.forEach((sec, si) => {
-    const key = `${yr}${sec}`;
-    const room = rooms[si];
+ sections.forEach((sec,si)=>{
+  const key=`${yr}${sec}`;
+  sectionRoom[key]=rooms[si];
+  timetable[key]={};
 
-    sectionRoom[key] = room;
-    timetable[key] = {};
+  days.forEach((day,di)=>{
+   timetable[key][day]=periods.map((p,pi)=>{
+    if((pi===3 && di%2===0)||(pi===5 && di%2===1)){
+     if((di+si)%3===0){
+      return {
+       kind:"lab",
+       subject:info.labs[(di+si)%info.labs.length],
+       room:`LAB${yr===1?"00":yr===2?"10":yr===3?"20":"30"}${String(((di+si)%(yr===1?3:4))+1).padStart(2,"0")}`
+      };
+     }
+    }
 
-    days.forEach((day, di) => {
-      timetable[key][day] = periods.map((p, pi) => {
-        const labPrefix =
-          yr === "1" ? "LAB00" :
-          yr === "2" ? "LAB10" :
-          yr === "3" ? "LAB20" : "LAB30";
+    if((di+pi+si)%11===0)
+     return {kind:"free",subject:"Free period"};
 
-        const labCount = yr === "1" ? 3 : 4;
+    if(pi===3)
+     return {kind:"break",subject:"Lunch"};
 
-        if (
-          ((pi === 3 && di % 2 === 0) ||
-           (pi === 5 && di % 2 === 1)) &&
-          (di + si) % 3 === 0
-        ) {
-          return {
-            kind: "lab",
-            subject: info.labs[(di + si) % info.labs.length],
-            room: `${labPrefix}${String(((di + si) % labCount) + 1).padStart(2, "0")}`
-          };
-        }
-
-        if ((di + pi + si) % 11 === 0) {
-          return { kind: "free", subject: "Free period" };
-        }
-
-        if (pi === 3) {
-          return { kind: "break", subject: "Lunch" };
-        }
-
-        const idx = (di * 2 + pi + si * 3 + Number(yr)) % info.subjects.length;
-
-        return {
-          kind: "class",
-          subject: info.subjects[idx]
-        };
-      });
-    });
+    const idx=(di*2+pi+si*3+yr)%info.subjects.length;
+    return {kind:"class",subject:info.subjects[idx]};
+   });
   });
+ });
 }
 
-// Fixed Wednesday lab periods
-for (const key of Object.keys(timetable)) {
-  const yr = Number(key[0]);
-  const info = years[yr];
-  const si = sections.indexOf(key.slice(1));
+for(const key of Object.keys(timetable)){
+ const yr=Number(key[0]);
+ const info=years[yr];
+ const si=sections.indexOf(key.slice(1));
+ const prefix=yr===1?"LAB00":yr===2?"LAB10":yr===3?"LAB20":"LAB30";
 
-  const prefix =
-    yr === 1 ? "LAB00" :
-    yr === 2 ? "LAB10" :
-    yr === 3 ? "LAB20" : "LAB30";
-
-  const count = yr === 1 ? 3 : 4;
-
-  timetable[key].Wednesday[3] = {
-    kind: "lab",
-    subject: info.labs[si % info.labs.length],
-    room: `${prefix}${String((si % count) + 1).padStart(2, "0")}`
-  };
+ timetable[key].Wednesday[3]={
+  kind:"lab",
+  subject:info.labs[si%info.labs.length],
+  room:`${prefix}${String(si%(yr===1?3:4)+1).padStart(2,"0")}`
+ };
 }
 
-/* =========================================
-   STATE AND HELPERS
-========================================= */
+/* STATE */
+const today=()=>new Date().toISOString().slice(0,10);
 
-const today = () => {
-  const d = new Date();
-  const local = new Date(d.getTime() - d.getTimezoneOffset() * 60000);
-  return local.toISOString().slice(0, 10);
-};
+let bookings=JSON.parse(localStorage.getItem("cc_bookings_v2")||"null")||[];
+let savedTimetable=JSON.parse(localStorage.getItem("cc_timetable_v1")||"null");
+if(savedTimetable){
+ Object.assign(timetable,savedTimetable);
+}
 
-let bookings = JSON.parse(
-  localStorage.getItem("cc_bookings_v2") || "null"
-) || [];
+let page=sessionStorage.getItem("cc_admin_route_requested")==="1"?"Admin":"Overview";
+let adminUser = null;
+let authReady = false;
+let authMessage = "";
+let floorSelected="Ground";
+let roomSelected="LH001";
+let classSelected="1A";
+let availabilityDate=today();
+let availabilityPeriod=0;
 
-let page = "Overview";
-let floorSelected = "Ground";
-let roomSelected = "LH001";
-let classSelected = "1A";
+let maintenanceRooms=JSON.parse(localStorage.getItem("cc_maintenance_v1")||"[]");
+let adminSection="1A";
+let adminDay="Monday";
+let adminPeriod=0;
 
-const app = document.querySelector("#app");
+const app=document.querySelector("#app");
 
-const save = () => {
-  localStorage.setItem("cc_bookings_v2", JSON.stringify(bookings));
-};
+const save=()=>localStorage.setItem("cc_bookings_v2",JSON.stringify(bookings));
 
-const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({
-  "&": "&amp;",
-  "<": "&lt;",
-  ">": "&gt;",
-  '"': "&quot;",
-  "'": "&#39;"
+const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({
+ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
 }[c]));
 
-const getFloor = name => floors.find(f => f.name === name);
+const getFloor=name=>floors.find(f=>f.name===name);
 
-/* =========================================
-   ROOM AVAILABILITY
-========================================= */
-
-function getClassOccupant(room, date, start, end) {
-  if (roomType[room] !== "Classroom") return null;
-
-  const d = new Date(date + "T12:00:00");
-  const day = days[(d.getDay() + 6) % 7];
-
-  if (!day) return null;
-
-  for (const [section, assignedRoom] of Object.entries(sectionRoom)) {
-    if (assignedRoom !== room) continue;
-
-    for (let i = 0; i < periods.length; i++) {
-      const p = periods[i];
-      const slot = timetable[section][day][i];
-
-      if (
-        slot.kind === "class" &&
-        start < p.end &&
-        end > p.start
-      ) {
-        return {
-          section,
-          subject: slot.subject,
-          period: p.label
-        };
-      }
-    }
-  }
-
-  return null;
-}
-
-function isBooked(room, date, start, end, ignoreId = null) {
-  return bookings.find(b =>
-    b.id !== ignoreId &&
-    b.room === room &&
-    b.date === date &&
-    b.status !== "Rejected" &&
-    start < b.end &&
-    end > b.start
-  );
-}
-
-function availability(room, date, start, end) {
-  if (!allRooms.includes(room)) {
-    return { ok: false, reason: "Unknown room" };
-  }
-
-  const occupant = getClassOccupant(room, date, start, end);
-
-  if (occupant) {
-    return {
-      ok: false,
-      reason: `${room} is allocated to ${occupant.section} (${occupant.subject}) during ${occupant.period}.`
-    };
-  }
-
-  const booked = isBooked(room, date, start, end);
-
-  if (booked) {
-    return {
-      ok: false,
-      reason: `Room already has a ${booked.status.toLowerCase()} booking: ${booked.title}.`
-    };
-  }
-
-  return { ok: true, reason: "Available" };
-}
-
-/* =========================================
-   NAVIGATION ICONS
-========================================= */
-
-const icons = {
-  "Overview": `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>`,
-
-  "Floor Plan": `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>`,
-
-  "Timetables": `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>`,
-
-  "Booking Requests": `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>`
+/* NAVIGATION ICONS */
+const icons={
+ "Overview":`<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>`,
+ "Floor Plan":`<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>`,
+ "Timetables":`<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>`,
+ "Admin":`<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l8 4v6c0 5-3.5 8-8 10-4.5-2-8-5-8-10V6z"/><path d="M9 12l2 2 4-4"/></svg>`,
+ "Booking Requests":`<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>`
 };
 
-const navItems = [
-  ["Overview"],
-  ["Floor Plan"],
-  ["Timetables"],
-  ["Booking Requests"]
-];
+const navItems=["Overview","Floor Plan","Timetables","Booking Requests","Admin"];
 
-/* =========================================
-   APP HEADER
-========================================= */
+/* AVAILABILITY */
+function getClassOccupant(room,date,start,end){
+ if(roomType[room]!=="Classroom") return null;
 
-function header(content) {
-  app.innerHTML = `
-    <div class="app-shell">
-      <aside class="sidebar">
-        <div class="brand">
-          <div class="brand-logo">C</div>
-          <div>
-            <b>CampusClass</b>
-            <small>SMART SPACES</small>
-          </div>
-        </div>
+ const d=new Date(date+"T12:00:00");
+ const day=days[(d.getDay()+6)%7];
+ if(!day) return null;
 
-        <div class="nav-label">NAVIGATION</div>
+ for(const [section,assignedRoom] of Object.entries(sectionRoom)){
+  if(assignedRoom!==room) continue;
 
-        <nav>
-          ${navItems.map(([n]) => `
-            <button class="nav ${page === n ? "active" : ""}" data-page="${n}">
-              <span class="nav-symbol">${icons[n]}</span>
-              ${n}
-            </button>
-          `).join("")}
-        </nav>
+  for(let i=0;i<periods.length;i++){
+   const p=periods[i];
+   const slot=timetable[section][day][i];
 
-        <div class="profile">
-          <div class="avatar">DU</div>
-          <div>
-            <b>Demo User</b>
-            <small>Student account</small>
-          </div>
-        </div>
-      </aside>
+   if(slot.kind==="class"&&start<p.end&&end>p.start){
+    return {section,subject:slot.subject,period:p.label};
+   }
+  }
+ }
+ return null;
+}
 
-      <main>
-        <header class="topbar">
-          <div>
-            <small>CANARA ENGINEERING COLLEGE</small>
-            <h1>${page}</h1>
-          </div>
-          <span class="date-label">
-            ${new Date().toLocaleDateString("en-IN", {
-              weekday: "long",
-              day: "numeric",
-              month: "short",
-              year: "numeric"
-            })}
-          </span>
-        </header>
+function isBooked(room,date,start,end,ignoreId=null){
+ return bookings.find(b=>
+  b.id!==ignoreId&&b.room===room&&b.date===date&&
+  b.status!=="Rejected"&&start<b.end&&end>b.start
+ );
+}
 
-        <section class="content">${content}</section>
-      </main>
+function availability(room,date,start,end){
+ if(!allRooms.includes(room)) return {ok:false,reason:"Unknown room"};
+ if(maintenanceRooms.includes(room)) return {ok:false,reason:`${room} is under maintenance.`};
+
+ const occupant=getClassOccupant(room,date,start,end);
+ if(occupant) return {ok:false,reason:`${room} is assigned to ${occupant.section} (${occupant.subject}) during ${occupant.period}.`};
+
+ const booked=isBooked(room,date,start,end);
+ if(booked) return {ok:false,reason:`Room has a ${booked.status.toLowerCase()} booking: ${booked.title}.`};
+
+ return {ok:true,reason:"Available"};
+}
+
+/* HEADER */
+function header(content){
+ app.innerHTML=`
+ <div class="app-shell">
+  <aside class="sidebar">
+   <div class="brand">
+    <div class="brand-logo">C</div>
+    <div><b>CampusClass</b><small>SMART SPACES</small></div>
+   </div>
+
+   <div class="nav-label">NAVIGATION</div>
+
+   <nav>
+    ${navItems.map(n=>`
+     <button class="nav ${page===n?"active":""}" data-page="${n}">
+      <span class="nav-symbol">${icons[n]}</span>${n}
+     </button>
+    `).join("")}
+   </nav>
+
+   <div class="profile">
+    <div class="avatar">${adminUser?"AD":"CC"}</div>
+    <div><b>${adminUser ? esc(adminUser.email) : "Campus user"}</b><small>${adminUser ? "Administrator" : "Student / Faculty"}</small></div>
+    ${adminUser ? `<button class="logout-btn" id="adminLogout" type="button">Log out</button>` : ""}
+   </div>
+  </aside>
+
+  <main>
+   <header class="topbar">
+    <div>
+     <small>CANARA ENGINEERING COLLEGE</small>
+     <h1>${page}</h1>
     </div>
-  `;
+    <span class="date-label">
+     ${new Date().toLocaleDateString("en-IN",{weekday:"long",day:"numeric",month:"short",year:"numeric"})}
+    </span>
+   </header>
+   <section class="content">${content}</section>
+  </main>
+ </div>`;
 
-  document.querySelectorAll("[data-page]").forEach(b => {
-    b.onclick = () => {
-      page = b.dataset.page;
-      render();
-    };
+ document.querySelectorAll("[data-page]").forEach(b=>{
+  b.onclick=()=>{page=b.dataset.page;if(page==="Admin")sessionStorage.setItem("cc_admin_route_requested","1");else sessionStorage.removeItem("cc_admin_route_requested");render()};
+ });
+}
+
+/* STATISTICS */
+function stat(label,value,sub){
+ return `<div class="stat"><small>${label}</small><b>${value}</b><span>${sub}</span></div>`;
+}
+
+/* OVERVIEW */
+function overview(){
+ const totalClass=floors.reduce((a,f)=>a+f.classrooms.length,0);
+ const totalLabs=floors.reduce((a,f)=>a+f.labs.length,0);
+ const totalSem=floors.reduce((a,f)=>a+f.seminars.length,0);
+
+ return `
+ <div class="hero">
+  <div>
+   <small>CAMPUS AT A GLANCE</small>
+   <h2>Find your space.<br>Plan your day.</h2>
+   <p>Explore rooms across four floors, view class schedules, and request spaces — all in one place.</p>
+   <div class="hero-actions"><button class="primary" data-go="Availability Map">⌕ Search Available Class</button><button class="primary" data-go="Booking Requests">＋ Request a room</button></div>
+  </div>
+  <div class="hero-art">◈</div>
+ </div>
+
+ <div class="stats">
+  ${stat("CLASSROOMS",totalClass,"Across four floors")}
+  ${stat("LABORATORIES",totalLabs,"Practical learning spaces")}
+  ${stat("SEMINAR HALLS",totalSem,"Ground floor")}
+  ${stat("BOOKINGS",bookings.length,"Saved in browser")}
+ </div>
+
+ <div class="section-title"><div><h3>Quick access</h3><p>Jump to any section.</p></div></div>
+ <div class="quick-grid">
+  <button data-go="Floor Plan"><b>⌂ Floor plan</b><span>Browse all ${allRooms.length} spaces</span></button>
+  <button data-go="Timetables"><b>▤ Class timetables</b><span>16 section-wise weekly schedules</span></button>
+  <button data-go="Booking Requests"><b>＋ Booking requests</b><span>Check availability and request rooms</span></button>
+  <button data-go="Availability Map"><b>⌕ Search available class</b><span>Find free classrooms across all four floors</span></button>
+ </div>
+
+ <div class="section-title"><div><h3>Recent requests</h3><p>Latest booking activity.</p></div></div>
+ ${bookingTable(bookings.slice().reverse().slice(0,5))}`;
+}
+
+/* FLOOR PLAN */
+function floorPlan(){
+ const f=getFloor(floorSelected);
+ const groups=[["Classrooms",f.classrooms],["Laboratories",f.labs],["Seminar Halls",f.seminars]];
+
+ return `
+ <div class="section-title">
+  <div><h3>Building directory</h3><p>Select a floor and choose a room.</p></div>
+  <span class="tag">${allRooms.length} SPACES</span>
+ </div>
+
+ <div class="floor-tabs">
+  ${floors.map(x=>`<button class="${x.name===floorSelected?"on":""}" data-floor="${x.name}">${x.name} Floor</button>`).join("")}
+ </div>
+
+ <div class="floor-columns">
+  <div class="panel">
+   <div class="panel-head"><b>${floorSelected} Floor · Directory</b><small>Select a room</small></div>
+   ${groups.map(([label,rooms])=>rooms.length?`
+    <h4>${label} <small>${rooms.length}</small></h4>
+    <div class="room-grid">
+     ${rooms.map(r=>`<button class="room ${roomSelected===r?"picked":""}" data-room="${r}"><b>${r}</b><small>${roomType[r]}</small></button>`).join("")}
+    </div>`:"").join("")}
+  </div>
+
+  <aside class="panel room-details">
+   <small>SELECTED SPACE</small>
+   <h2>${roomSelected}</h2>
+   <span class="tag">${roomType[roomSelected]}</span>
+   <div class="detail"><small>Floor</small><b>${roomFloor[roomSelected]} Floor</b></div>
+   <div class="detail"><small>Capacity</small><b>${roomCapacity[roomSelected]} people</b></div>
+   <button class="primary wide" data-go="Booking Requests">Check availability →</button>
+  </aside>
+ </div>`;
+}
+
+
+/* SEARCH AVAILABLE CLASS / FLOOR AVAILABILITY MAP */
+function availabilityMap(){
+ const period=periods[availabilityPeriod]||periods[0];
+ const counts=floors.map(f=>({name:f.name,count:f.classrooms.filter(r=>availability(r,availabilityDate,period.start,period.end).ok).length,total:f.classrooms.length}));
+ const selected=getFloor(floorSelected);
+ const rooms=selected.classrooms.map(room=>({room,...availability(room,availabilityDate,period.start,period.end)}));
+ const dateLabel=new Date(availabilityDate+"T12:00:00").toLocaleDateString("en-IN",{weekday:"long",day:"numeric",month:"long",year:"numeric"});
+ return `
+  <div class="availability-heading">
+   <div><span class="eyebrow">CAMPUS CLASSROOM FINDER</span><h2>Find an available classroom</h2><p>Choose a date and class period. Green rooms are available; red rooms are occupied or unavailable.</p></div>
+   <div class="availability-date">
+  <span>SELECTED DATE & TIME</span>
+  <b>📅 Date: ${dateLabel}</b>
+  <b>🕒 Time: ${period.start} - ${period.end}</b>
+</div>
+  </div>
+  <div class="panel availability-search-panel">
+   <label>DATE<input id="availabilityDate" type="date" value="${availabilityDate}"></label>
+   <label>TIME SLOT<select id="availabilityPeriod">${periods.map((p,i)=>`<option value="${i}" ${i===availabilityPeriod?"selected":""}>${p.label}</option>`).join("")}</select></label>
+   <button class="primary" id="runAvailabilitySearch">Search classrooms</button>
+  </div>
+  <div class="floor-count-grid">
+   ${counts.map(x=>`<button class="floor-count-card ${x.name===floorSelected?"selected":""}" data-availability-floor="${x.name}"><span>${x.name} Floor</span><b>${x.count}</b><small>of ${x.total} classrooms available</small><i>${x.count} available</i></button>`).join("")}
+  </div>
+  <div class="section-title"><div><h3>${selected.name} Floor · Classroom map</h3><p>${dateLabel} · ${period.label}</p></div><span class="tag">${rooms.filter(x=>x.ok).length} AVAILABLE</span></div>
+  <div class="availability-legend"><span><i class="legend-green"></i>Available</span><span><i class="legend-red"></i>Occupied / unavailable</span></div>
+  <div class="availability-room-grid">
+   ${rooms.map(x=>`<button class="availability-room ${x.ok?"available":"occupied"}" data-availability-room="${x.room}" title="${esc(x.reason)}"><b>${x.room}</b><span>${x.ok?"Available":"Occupied"}</span><small>${x.ok?"Ready to request":"Not free in this slot"}</small></button>`).join("")}
+  </div>
+  <p class="hint">Availability is calculated from the current timetable, booking requests and maintenance records. RFID occupancy can be connected later when the hardware is available.</p>
+ `;
+}
+
+/* TIMETABLE */
+function timetablePage(){
+ const chosen=document.querySelector("#classSelect")?.value||classSelected;
+ const section=timetable[chosen],yr=Number(chosen[0]),floor=years[yr].floor;
+
+ return `
+ <div class="section-title">
+  <div><h3>Section timetable</h3><p>Weekly academic schedule.</p></div>
+  <label class="selector">SECTION
+   <select id="classSelect">
+    ${Object.keys(timetable).map(k=>`<option ${k===chosen?"selected":""}>${k}</option>`).join("")}
+   </select>
+  </label>
+ </div>
+
+ <div class="panel">
+  <div class="panel-head">
+   <div><b>${yr} Year · Section ${chosen.slice(1)}</b><small>${floor} Floor · ${sectionRoom[chosen]}</small></div>
+   <span class="tag">MON – SAT</span>
+  </div>
+  <div class="table-scroll">
+   <table class="tt">
+    <thead><tr><th>DAY</th>${periods.map(p=>`<th>${p.label}</th>`).join("")}</tr></thead>
+    <tbody>
+     ${days.map(day=>`
+      <tr><th>${day}</th>
+       ${section[day].map(s=>`<td class="${s.kind}">${esc(s.subject)}${s.kind==="lab"?`<small>${esc(s.room)}</small>`:""}</td>`).join("")}
+      </tr>`).join("")}
+    </tbody>
+   </table>
+  </div>
+ </div>
+ <div class="legend-row"><span>Regular class = classroom occupied</span><span>Lab / free / lunch = classroom available</span></div>
+ <p class="hint">Demo timetable data. Admin can edit schedules from the Admin page.</p>`;
+}
+
+/* BOOKING PAGE */
+function bookingPage(){
+ const date=document.querySelector("#bookDate")?.value||today();
+ const floor=document.querySelector("#bookFloor")?.value||"Ground";
+ const room=document.querySelector("#bookRoom")?.value||getFloor(floor).classrooms[0];
+ const check=availability(room,date,"09:00","10:00");
+
+ const slots=periods.map(p=>{
+  const a=availability(room,date,p.start,p.end);
+  return `<div class="slot-row"><span>${p.label}</span><div class="slot ${a.ok?"open":"closed"}">${a.ok?"Available":esc(a.reason)}</div></div>`;
+ }).join("");
+
+ return `
+ <div class="booking-layout">
+  <div>
+   <div class="section-title"><div><h3>Room availability</h3><p>Timetable-aware room checking.</p></div></div>
+
+   <div class="filters">
+    <label>DATE<input id="bookDate" type="date" value="${date}"></label>
+    <label>FLOOR<select id="bookFloor">${floors.map(f=>`<option ${f.name===floor?"selected":""}>${f.name}</option>`).join("")}</select></label>
+    <label>ROOM<select id="bookRoom">${getFloor(floor).classrooms.concat(getFloor(floor).labs,getFloor(floor).seminars).map(r=>`<option ${r===room?"selected":""}>${r}</option>`).join("")}</select></label>
+   </div>
+
+   <div class="panel">
+    <div class="panel-head"><div><b>${room} · Daily Timeline</b><small>${roomType[room]} · Capacity ${roomCapacity[room]}</small></div><span class="tag">${date}</span></div>
+    <div class="timeline">${slots}</div>
+    <div class="timeline-legend"><span><i class="green-dot"></i>Available</span><span><i class="red-dot"></i>Occupied / Requested</span></div>
+   </div>
+
+   <div class="section-title"><div><h3>My booking requests</h3><p>Requests submitted from this browser.</p></div></div>
+   ${bookingTable(bookings.slice().reverse())}
+  </div>
+
+  <aside class="panel form-panel">
+   <small class="eyebrow">NEW REQUEST</small>
+   <h3>Book a space</h3>
+   <p>Fill in the details to request a room.</p>
+   <form id="bookingForm">
+    <label>Event / class title<input name="title" required placeholder="e.g. Robotics workshop"></label>
+    <label>Purpose<textarea name="purpose" rows="3" required></textarea></label>
+    <div class="two">
+     <label>Date<input name="date" type="date" required value="${date}"></label>
+     <label>Participants<input name="people" type="number" min="1" required placeholder="40"></label>
+    </div>
+    <div class="two">
+     <label>Start time<select name="start">${timeChoices("09:00")}</select></label>
+     <label>End time<select name="end">${timeChoices("10:00")}</select></label>
+    </div>
+    <label>Room<select name="room">${allRooms.map(r=>`<option ${r===room?"selected":""}>${r}</option>`).join("")}</select></label>
+    <label>Equipment needed<input name="equipment" placeholder="Projector, computers…"></label>
+    <label>Organizer name<input name="organizer" required placeholder="Your name"></label>
+    <label>Contact email<input name="email" type="email" required placeholder="name@example.com"></label>
+    <div class="availability-result ${check.ok?"good":"bad"}">${esc(check.reason)}</div>
+    <button class="primary wide" type="submit">Submit request →</button>
+    <small class="hint">Demo only — requests are saved in this browser.</small>
+   </form>
+  </aside>
+ </div>`;
+}
+
+function timeChoices(selected){
+ return ["08:00","09:00","10:00","11:00","11:20","12:00","12:20","13:00","14:00","14:10","15:00","15:50","16:00","16:40","17:00","18:00"]
+ .map(t=>`<option ${t===selected?"selected":""}>${t}</option>`).join("");
+}
+
+function bookingTable(items){
+ if(!items.length) return `<div class="empty">No booking requests yet.</div>`;
+
+ return `
+ <div class="panel table-panel"><div class="table-scroll">
+ <table>
+  <thead><tr><th>Event</th><th>Room</th><th>Date / Time</th><th>Status</th><th></th></tr></thead>
+  <tbody>${items.map(b=>`
+   <tr>
+    <td><b>${esc(b.title)}</b><small>${esc(b.organizer)}</small></td>
+    <td>${esc(b.room)}</td>
+    <td>${esc(b.date)}<small>${esc(b.start)} – ${esc(b.end)}</small></td>
+    <td><span class="status ${b.status.toLowerCase()}">${esc(b.status)}</span></td>
+    <td>${b.status==="Pending"?`<button class="cancel" data-cancel="${b.id}">Cancel</button>`:""}</td>
+   </tr>`).join("")}
+  </tbody>
+ </table></div></div>`;
+}
+
+/* ADMIN AUTHENTICATION */
+function adminLoginPage(){
+ return `
+ <div class="auth-wrap">
+  <div class="auth-card">
+   <div class="auth-mark">C</div>
+   <div class="auth-eyebrow">CAMPUSCLASS · SECURE ACCESS</div>
+   <h2>Administrator sign in</h2>
+   <p>Sign in with your authorized administrator account to manage campus rooms, timetables and booking requests.</p>
+   <form id="adminLoginForm" class="auth-form">
+    <label>EMAIL ADDRESS<input name="email" type="email" autocomplete="username" placeholder="admin@college.edu" required></label>
+    <label>PASSWORD<input name="password" type="password" autocomplete="current-password" placeholder="Enter your password" required></label>
+    <div class="auth-error" id="authError" role="alert">${esc(authMessage)}</div>
+    <button class="primary wide" type="submit">Sign in to Admin</button>
+   </form>
+   <button class="auth-back" type="button" data-go="Overview">← Back to CampusClass</button>
+   <small class="auth-note">Your account must have the admin role assigned in Firestore.</small>
+  </div>
+ </div>`;
+}
+
+async function handleAdminLogin(form){
+ const button=form.querySelector('button[type="submit"]');
+ const error=document.querySelector("#authError");
+ const data=Object.fromEntries(new FormData(form).entries());
+ button.disabled=true; button.textContent="Verifying…"; error.textContent="";
+ try{
+  // In-memory persistence deliberately requires sign-in again after a page refresh.
+  await setPersistence(auth, inMemoryPersistence);
+  const credential=await signInWithEmailAndPassword(auth,data.email.trim(),data.password);
+  const roleSnap=await getDoc(doc(db,"user",credential.user.uid));
+  if(!roleSnap.exists() || roleSnap.data().role!=="admin"){
+   await signOut(auth);
+   throw new Error("This account is not authorized as an administrator.");
+  }
+  adminUser=credential.user;
+  authMessage="";
+  sessionStorage.setItem("cc_admin_route_requested","1");
+  page="Admin";
+  render();
+ }catch(err){
+  error.textContent=err.code==="auth/invalid-credential" || err.code==="auth/wrong-password"
+   ? "Incorrect email or password."
+   : err.code==="auth/too-many-requests"
+    ? "Too many attempts. Please try again later."
+    : err.message || "Unable to sign in. Please try again.";
+  button.disabled=false; button.textContent="Sign in to Admin";
+ }
+}
+
+/* ADMIN DASHBOARD */
+function adminPage(){
+ const pending=bookings.filter(b=>b.status==="Pending");
+ const approved=bookings.filter(b=>b.status==="Approved");
+ const section=timetable[adminSection]||timetable["1A"];
+ const slot=section[adminDay][adminPeriod];
+
+ return `
+ <div class="section-title">
+  <div><h3>Campus administration</h3><p>Manage bookings, academic schedules and room operations.</p></div>
+  <div class="admin-top-actions"><span class="tag">ADMIN CONSOLE</span><button class="logout-inline" id="adminLogoutTop" type="button">Sign out</button></div>
+ </div>
+
+ <div class="stats">
+  ${stat("PENDING REQUESTS",pending.length,"Awaiting decision")}
+  ${stat("APPROVED BOOKINGS",approved.length,"Confirmed reservations")}
+  ${stat("TOTAL ROOMS",allRooms.length,"Across four floors")}
+  ${stat("MAINTENANCE ROOMS",maintenanceRooms.length,"Temporarily unavailable")}
+ </div>
+
+ <div class="section-title"><div><h3>Booking approvals</h3><p>Review requests and approve or reject them.</p></div></div>
+ ${adminBookingTable(bookings.slice().reverse())}
+
+ <div class="section-title"><div><h3>Timetable editor</h3><p>Update a section's subject, session type and lab assignment.</p></div></div>
+
+ <div class="panel admin-editor">
+  <div class="filters">
+   <label>SECTION<select id="adminSection">${Object.keys(timetable).map(k=>`<option ${k===adminSection?"selected":""}>${k}</option>`).join("")}</select></label>
+   <label>DAY<select id="adminDay">${days.map(d=>`<option ${d===adminDay?"selected":""}>${d}</option>`).join("")}</select></label>
+   <label>PERIOD<select id="adminPeriod">${periods.map((p,i)=>`<option value="${i}" ${i===adminPeriod?"selected":""}>${p.label}</option>`).join("")}</select></label>
+  </div>
+
+  <form id="adminTimetableForm" class="admin-form">
+   <label>SUBJECT / ACTIVITY<input name="subject" required value="${esc(slot.subject)}"></label>
+   <label>SESSION TYPE<select name="kind">
+    <option value="class" ${slot.kind==="class"?"selected":""}>Regular class</option>
+    <option value="lab" ${slot.kind==="lab"?"selected":""}>Lab session</option>
+    <option value="free" ${slot.kind==="free"?"selected":""}>Free period</option>
+    <option value="break" ${slot.kind==="break"?"selected":""}>Lunch / break</option>
+   </select></label>
+   <label>LAB ROOM<input name="room" value="${esc(slot.room||"")}" placeholder="e.g. LAB001"></label>
+   <button class="primary" type="submit">Save timetable change</button>
+  </form>
+  <p class="hint">Changes are saved in this browser. Shared updates require Firebase.</p>
+ </div>
+
+ <div class="section-title"><div><h3>Room operations</h3><p>Temporarily mark rooms unavailable for maintenance.</p></div></div>
+ <div class="panel">
+  <div class="filters">
+   <label>SELECT ROOM<select id="maintenanceRoom">${allRooms.map(r=>`<option>${r}</option>`).join("")}</select></label>
+   <label>STATUS<select id="maintenanceAction"><option value="close">Mark under maintenance</option><option value="open">Restore room availability</option></select></label>
+   <div class="maintenance-action"><button class="primary" id="maintenanceSave" type="button">Update room status</button></div>
+  </div>
+  <p class="hint">Currently under maintenance: ${maintenanceRooms.length?maintenanceRooms.map(esc).join(", "):"None"}</p>
+ </div>`;
+}
+
+function adminBookingTable(items){
+ if(!items.length) return `<div class="empty">No booking requests have been submitted yet.</div>`;
+
+ return `
+ <div class="panel table-panel"><div class="table-scroll">
+ <table>
+  <thead><tr><th>EVENT / ORGANIZER</th><th>ROOM</th><th>DATE / TIME</th><th>STATUS</th><th>DECISION</th></tr></thead>
+  <tbody>${items.map(b=>`
+   <tr>
+    <td><b>${esc(b.title)}</b><small>${esc(b.organizer)} · ${esc(b.email||"")}</small></td>
+    <td>${esc(b.room)}</td>
+    <td>${esc(b.date)}<small>${esc(b.start)} – ${esc(b.end)}</small></td>
+    <td><span class="status ${b.status.toLowerCase()}">${esc(b.status)}</span></td>
+    <td>${b.status==="Pending"?`<button class="admin-approve" data-approve="${b.id}">Approve</button> <button class="cancel" data-reject="${b.id}">Reject</button>`:"—"}</td>
+   </tr>`).join("")}
+  </tbody>
+ </table></div></div>`;
+}
+
+/* ADMIN EVENT HANDLERS */
+function wireAdmin(){
+ ["adminSection","adminDay","adminPeriod"].forEach(id=>{
+  document.querySelector("#"+id)?.addEventListener("change",e=>{
+   if(id==="adminSection")adminSection=e.target.value;
+   if(id==="adminDay")adminDay=e.target.value;
+   if(id==="adminPeriod")adminPeriod=Number(e.target.value);
+   render();
   });
-}
+ });
 
-/* =========================================
-   OVERVIEW PAGE
-========================================= */
+ document.querySelector("#adminTimetableForm")?.addEventListener("submit",e=>{
+  e.preventDefault();
+  const data=Object.fromEntries(new FormData(e.target).entries());
 
-function stat(label, value, sub) {
-  return `
-    <div class="stat">
-      <small>${label}</small>
-      <b>${value}</b>
-      <span>${sub}</span>
-    </div>
-  `;
-}
-
-function overview() {
-  const totalClass = floors.reduce((a, f) => a + f.classrooms.length, 0);
-  const totalLabs = floors.reduce((a, f) => a + f.labs.length, 0);
-  const totalSem = floors.reduce((a, f) => a + f.seminars.length, 0);
-
-  return `
-    <div class="hero">
-      <div>
-        <small>CAMPUS AT A GLANCE</small>
-        <h2>Find your space.<br>Plan your day.</h2>
-        <p>Explore rooms across 4 floors, view class schedules, and request spaces — all in one place.</p>
-        <button class="primary" data-go="Booking Requests">＋ Request a room</button>
-      </div>
-      <div class="hero-art">◈</div>
-    </div>
-
-    <div class="stats">
-      ${stat("CLASSROOMS", totalClass, "Across four floors")}
-      ${stat("LABORATORIES", totalLabs, "Practical learning spaces")}
-      ${stat("SEMINAR HALLS", totalSem, "Ground floor")}
-      ${stat("BOOKINGS", bookings.length, "Saved in browser")}
-    </div>
-
-    <div class="section-title">
-      <div><h3>Quick access</h3><p>Jump to any section.</p></div>
-    </div>
-
-    <div class="quick-grid">
-      <button data-go="Floor Plan">
-        <b>⌂ Floor plan</b>
-        <span>Browse all ${allRooms.length} spaces across 4 floors</span>
-      </button>
-
-      <button data-go="Timetables">
-        <b>▤ Class timetables</b>
-        <span>16 section-wise weekly schedules</span>
-      </button>
-
-      <button data-go="Booking Requests">
-        <b>＋ Booking requests</b>
-        <span>Check availability and request rooms</span>
-      </button>
-    </div>
-
-    <div class="section-title">
-      <div><h3>Recent requests</h3><p>Latest booking activity.</p></div>
-    </div>
-
-    ${bookingTable(bookings.slice().reverse().slice(0, 5))}
-  `;
-}
-
-/* =========================================
-   DIGITAL TWIN FLOOR PLAN
-========================================= */
-
-function floorPlan() {
-  const f = getFloor(floorSelected);
-
-  const selectedDate =
-    document.querySelector("#mapDate")?.value || today();
-
-  const selectedTime =
-    document.querySelector("#mapTime")?.value ||
-    new Date().toTimeString().slice(0, 5);
-
-  function roomStatus(room) {
-    // Check bookings first
-    const booking = bookings.find(b =>
-      b.room === room &&
-      b.date === selectedDate &&
-      b.status !== "Rejected" &&
-      selectedTime >= b.start &&
-      selectedTime < b.end
-    );
-
-    if (booking) {
-      return booking.status === "Approved"
-        ? {
-            type: "critical",
-            label: "Booked",
-            detail: booking.title
-          }
-        : {
-            type: "warning",
-            label: "Pending request",
-            detail: booking.title
-          };
-    }
-
-    const dateObject = new Date(selectedDate + "T12:00:00");
-    const dayIndex = (dateObject.getDay() + 6) % 7;
-    const day = days[dayIndex];
-
-    if (!day) {
-      return {
-        type: "healthy",
-        label: "Available",
-        detail: "No regular classes on Sunday"
-      };
-    }
-
-    const periodIndex = periods.findIndex(p =>
-      selectedTime >= p.start &&
-      selectedTime < p.end
-    );
-
-    if (periodIndex === -1) {
-      return {
-        type: "healthy",
-        label: "Available",
-        detail: "Outside scheduled class hours"
-      };
-    }
-
-    // Classroom timetable analysis
-    if (roomType[room] === "Classroom") {
-      for (const [section, assignedRoom] of Object.entries(sectionRoom)) {
-        if (assignedRoom !== room) continue;
-
-        const slot = timetable[section]?.[day]?.[periodIndex];
-
-        if (!slot) continue;
-
-        if (slot.kind === "class") {
-          return {
-            type: "warning",
-            label: "Class ongoing",
-            detail: `${section} · ${slot.subject}`
-          };
-        }
-
-        const detail =
-          slot.kind === "lab"
-            ? `${section} attending ${slot.subject}`
-            : slot.kind === "break"
-              ? "Lunch break"
-              : "Free period";
-
-        return {
-          type: "healthy",
-          label: "Available",
-          detail
-        };
-      }
-    }
-
-    // Laboratory timetable analysis
-    if (roomType[room] === "Laboratory") {
-      for (const [section, schedule] of Object.entries(timetable)) {
-        const slot = schedule?.[day]?.[periodIndex];
-
-        if (slot?.kind === "lab" && slot.room === room) {
-          return {
-            type: "lab-active",
-            label: "Lab active",
-            detail: `${section} · ${slot.subject}`
-          };
-        }
-      }
-    }
-
-    return {
-      type: "healthy",
-      label: "Available",
-      detail: "No scheduled activity"
-    };
+  if(data.kind==="lab"&&(!allRooms.includes(data.room)||!data.room.startsWith("LAB"))){
+   alert("Enter a valid lab room ID.");
+   return;
   }
 
-  const groups = [
-    ["Classrooms", f.classrooms],
-    ["Laboratories", f.labs],
-    ["Seminar halls", f.seminars]
-  ];
-
-  const rooms = [
-    ...f.classrooms,
-    ...f.labs,
-    ...f.seminars
-  ];
-
-  if (!rooms.includes(roomSelected)) {
-    roomSelected = rooms[0];
-  }
-
-  const counts = {
-    healthy: 0,
-    warning: 0,
-    critical: 0,
-    "lab-active": 0
+  timetable[adminSection][adminDay][adminPeriod]={
+   kind:data.kind,
+   subject:data.subject,
+   ...(data.kind==="lab"?{room:data.room}:{})
   };
 
-  rooms.forEach(room => {
-    counts[roomStatus(room).type]++;
+  localStorage.setItem("cc_timetable_v1",JSON.stringify(timetable));
+  alert("Timetable updated and saved.");
+  render();
+ });
+
+ document.querySelectorAll("[data-approve]").forEach(b=>{
+  b.onclick=()=>{
+   const item=bookings.find(x=>x.id===Number(b.dataset.approve));
+   if(!item)return;
+
+   const conflict=bookings.find(x=>
+    x.id!==item.id&&x.room===item.room&&x.date===item.date&&
+    x.status==="Approved"&&item.start<x.end&&item.end>x.start
+   );
+
+   if(conflict){alert("Cannot approve: overlapping approved booking.");return;}
+
+   const occ=getClassOccupant(item.room,item.date,item.start,item.end);
+   if(occ){alert("Cannot approve: room is assigned to a class during that time.");return;}
+
+   if(maintenanceRooms.includes(item.room)){
+    alert("Cannot approve: room is under maintenance.");
+    return;
+   }
+
+   item.status="Approved";
+   save();
+   render();
+  };
+ });
+
+ document.querySelectorAll("[data-reject]").forEach(b=>{
+  b.onclick=()=>{
+   const item=bookings.find(x=>x.id===Number(b.dataset.reject));
+   if(item){item.status="Rejected";save();render();}
+  };
+ });
+
+ document.querySelector("#maintenanceSave")?.addEventListener("click",()=>{
+  const room=document.querySelector("#maintenanceRoom").value;
+  const action=document.querySelector("#maintenanceAction").value;
+
+  maintenanceRooms=action==="close"
+   ?[...new Set([...maintenanceRooms,room])]
+   :maintenanceRooms.filter(r=>r!==room);
+
+  localStorage.setItem("cc_maintenance_v1",JSON.stringify(maintenanceRooms));
+  render();
+ });
+}
+
+/* BOOKING EVENT HANDLERS */
+function wireBooking(){
+ ["bookDate","bookFloor","bookRoom"].forEach(id=>{
+  document.querySelector("#"+id)?.addEventListener("change",()=>{
+   if(id==="bookFloor"){
+    const f=getFloor(document.querySelector("#bookFloor").value);
+    document.querySelector("#bookRoom").innerHTML=[
+     ...f.classrooms,...f.labs,...f.seminars
+    ].map(r=>`<option>${r}</option>`).join("");
+   }
+   render();
   });
+ });
 
-  const selectedStatus = roomStatus(roomSelected);
+ document.querySelector("#bookingForm")?.addEventListener("submit",e=>{
+  e.preventDefault();
 
-  return `
-    <div class="digital-map">
+  const data=Object.fromEntries(new FormData(e.target).entries());
+  const b={...data,people:Number(data.people),id:Date.now(),status:"Pending"};
 
-      <div class="digital-header">
-        <div>
-          <span class="digital-kicker">DIGITAL TWIN</span>
-          <h2>Campus Map</h2>
-          <small>${f.name} Floor · ${rooms.length} spaces monitored</small>
-        </div>
+  if(b.end<=b.start){alert("End time must be later than start time.");return;}
+  if(b.people>roomCapacity[b.room]){alert(`Room capacity is ${roomCapacity[b.room]}.`);return;}
 
-        <div class="map-legend">
-          <span class="healthy-dot">● Available</span>
-          <span class="warning-dot">● Class ongoing</span>
-          <span class="critical-dot">● Approved booking</span>
-          <span class="lab-dot">● Lab active</span>
-        </div>
-      </div>
+  const result=availability(b.room,b.date,b.start,b.end);
+  if(!result.ok){alert(result.reason);return;}
 
-      <div class="map-controls">
-        <label>
-          DATE
-          <input type="date" id="mapDate" value="${esc(selectedDate)}">
-        </label>
-
-        <label>
-          TIME
-          <input type="time" id="mapTime" value="${esc(selectedTime)}">
-        </label>
-
-        <label>
-          FLOOR
-          <select id="mapFloor">
-            ${floors.map(x => `
-              <option value="${x.name}" ${x.name === floorSelected ? "selected" : ""}>
-                ${x.name} Floor
-              </option>
-            `).join("")}
-          </select>
-        </label>
-
-        <div class="live-indicator">● TIMETABLE ANALYSIS</div>
-      </div>
-
-      <div class="map-stats">
-        <div><b>${counts.healthy}</b><small>Available</small></div>
-        <div><b>${counts.warning}</b><small>Occupied</small></div>
-        <div><b>${counts.critical}</b><small>Booked</small></div>
-        <div><b>${counts["lab-active"]}</b><small>Active labs</small></div>
-      </div>
-
-      <div class="digital-grid">
-        ${groups.map(([title, list]) => list.length ? `
-          <div class="digital-group">
-            <h3>${title} <span>${list.length}</span></h3>
-
-            <div class="digital-rooms">
-              ${list.map(room => {
-                const s = roomStatus(room);
-
-                return `
-                  <button
-                    class="digital-room ${s.type} ${room === roomSelected ? "selected" : ""}"
-                    data-room="${room}"
-                    type="button"
-                  >
-                    <span class="building-icon">▥</span>
-                    <b>${room}</b>
-                    <strong>${s.label}</strong>
-                    <small>${esc(s.detail)}</small>
-                  </button>
-                `;
-              }).join("")}
-            </div>
-          </div>
-        ` : "").join("")}
-      </div>
-
-      <div class="digital-footer">
-        <span>● TIMETABLE-BASED STATUS · DEMO DATA</span>
-        <span>${esc(selectedDate)} · ${esc(selectedTime)}</span>
-      </div>
-    </div>
-
-    <div class="digital-detail">
-      <span>SELECTED SPACE</span>
-      <h2>${roomSelected}</h2>
-      <p>${roomType[roomSelected]} · ${roomFloor[roomSelected]} Floor</p>
-
-      <div class="detail-status ${selectedStatus.type}">
-        ${selectedStatus.label}
-      </div>
-
-      <p>${esc(selectedStatus.detail)}</p>
-      <p>Capacity: ${roomCapacity[roomSelected]} people</p>
-
-      <button class="primary" data-go="Booking Requests" type="button">
-        View booking options →
-      </button>
-    </div>
-
-    <p class="hint">
-      Status is calculated from demo timetables and locally saved bookings,
-      not physical occupancy sensors.
-    </p>
-  `;
+  bookings.push(b);
+  save();
+  alert("Booking request submitted. Status: Pending.");
+  render();
+ });
 }
 
-/* =========================================
-   TIMETABLE PAGE
-========================================= */
+/* MAIN RENDER */
+function render(){
+ if(page==="Admin" && !adminUser){
+  header(adminLoginPage());
+  document.querySelector("#adminLoginForm")?.addEventListener("submit",e=>{
+   e.preventDefault(); handleAdminLogin(e.currentTarget);
+  });
+  document.querySelectorAll("[data-go]").forEach(b=>b.onclick=()=>{page=b.dataset.go;render()});
+  return;
+ }
+ const content=page==="Overview"?overview()
+  :page==="Floor Plan"?floorPlan()
+  :page==="Availability Map"?availabilityMap()
+  :page==="Timetables"?timetablePage()
+  :page==="Admin"?adminPage()
+  :bookingPage();
 
-function timetablePage() {
-  const chosen =
-    document.querySelector("#classSelect")?.value || classSelected;
+ header(content);
 
-  const section = timetable[chosen];
-  const yr = Number(chosen[0]);
-  const floor = years[yr].floor;
+ const logout=async()=>{
+  try{ await signOut(auth); } finally { adminUser=null; sessionStorage.removeItem("cc_admin_route_requested"); page="Overview"; render(); }
+ };
+ document.querySelector("#adminLogout")?.addEventListener("click",logout);
+ document.querySelector("#adminLogoutTop")?.addEventListener("click",logout);
 
-  return `
-    <div class="section-title">
-      <div>
-        <h3>Section timetable</h3>
-        <p>Each section has a separate illustrative weekly schedule.</p>
-      </div>
+ document.querySelectorAll("[data-go]").forEach(b=>{
+  b.onclick=()=>{page=b.dataset.go;if(page==="Admin")sessionStorage.setItem("cc_admin_route_requested","1");else sessionStorage.removeItem("cc_admin_route_requested");render()};
+ });
 
-      <label class="selector">
-        SECTION
-        <select id="classSelect">
-          ${Object.keys(timetable).map(k => `
-            <option ${k === chosen ? "selected" : ""}>${k}</option>
-          `).join("")}
-        </select>
-      </label>
-    </div>
+ document.querySelector("#runAvailabilitySearch")?.addEventListener("click",()=>{
+  availabilityDate=document.querySelector("#availabilityDate").value||today();
+  availabilityPeriod=Number(document.querySelector("#availabilityPeriod").value)||0;
+  render();
+ });
+ document.querySelectorAll("[data-availability-floor]").forEach(b=>b.onclick=()=>{floorSelected=b.dataset.availabilityFloor;render()});
+ document.querySelectorAll("[data-availability-room]").forEach(b=>b.onclick=()=>{roomSelected=b.dataset.availabilityRoom;page="Floor Plan";floorSelected=roomFloor[roomSelected];render()});
 
-    <div class="panel">
-      <div class="panel-head">
-        <div>
-          <b>
-            ${yr}${yr === 1 ? "st" : yr === 2 ? "nd" : yr === 3 ? "rd" : "th"}
-            Year · Section ${chosen.slice(1)}
-          </b>
-          <small>${floor} Floor · Classroom ${sectionRoom[chosen]}</small>
-        </div>
+ document.querySelectorAll("[data-floor]").forEach(b=>{
+  b.onclick=()=>{
+   floorSelected=b.dataset.floor;
+   roomSelected=getFloor(floorSelected).classrooms[0]||getFloor(floorSelected).labs[0];
+   render();
+  };
+ });
 
-        <span class="tag">MON – SAT</span>
-      </div>
+ document.querySelectorAll("[data-room]").forEach(b=>{
+  b.onclick=()=>{roomSelected=b.dataset.room;render()};
+ });
 
-      <div class="table-scroll">
-        <table class="tt">
-          <thead>
-            <tr>
-              <th>DAY</th>
-              ${periods.map(p => `<th>${p.label}</th>`).join("")}
-            </tr>
-          </thead>
+ document.querySelector("#classSelect")?.addEventListener("change",e=>{
+  classSelected=e.target.value;
+  render();
+ });
 
-          <tbody>
-            ${days.map(day => `
-              <tr>
-                <th>${day}</th>
-                ${section[day].map(s => `
-                  <td class="${s.kind}">
-                    ${esc(s.subject)}
-                    ${s.kind === "lab" ? `<small>${esc(s.room)}</small>` : ""}
-                  </td>
-                `).join("")}
-              </tr>
-            `).join("")}
-          </tbody>
-        </table>
-      </div>
-    </div>
+ wireBooking();
+ if(page==="Admin")wireAdmin();
 
-    <div class="legend-row">
-      <span>● Regular class = classroom occupied</span>
-      <span>● Lab / free / lunch = classroom available</span>
-    </div>
-
-    <p class="hint">
-      Demo subjects and faculty assignments are illustrative.
-      Replace with official college timetable data when available.
-    </p>
-  `;
+ document.querySelectorAll("[data-cancel]").forEach(b=>{
+  b.onclick=()=>{
+   const id=Number(b.dataset.cancel);
+   bookings=bookings.map(x=>x.id===id?{...x,status:"Rejected"}:x);
+   save();
+   render();
+  };
+ });
 }
 
-/* =========================================
-   BOOKING PAGE
-========================================= */
-
-function bookingPage() {
-  const date =
-    document.querySelector("#bookDate")?.value || today();
-
-  const floor =
-    document.querySelector("#bookFloor")?.value || "Ground";
-
-  const room =
-    document.querySelector("#bookRoom")?.value ||
-    getFloor(floor).classrooms[0];
-
-  const start =
-    document.querySelector("#bookStart")?.value || "09:00";
-
-  const end =
-    document.querySelector("#bookEnd")?.value || "10:00";
-
-  const check = availability(room, date, start, end);
-
-  const slots = periods.map(p => {
-    const a = availability(room, date, p.start, p.end);
-
-    return `
-      <div class="slot-row">
-        <span>${p.label}</span>
-        <div class="slot ${a.ok ? "open" : "closed"}">
-          ${a.ok ? "Available" : esc(a.reason)}
-        </div>
-      </div>
-    `;
-  }).join("");
-
-  return `
-    <div class="booking-layout">
-      <div>
-        <div class="section-title">
-          <div>
-            <h3>Room availability</h3>
-            <p>Availability follows section timetables and existing requests.</p>
-          </div>
-        </div>
-
-        <div class="filters">
-          <label>
-            DATE
-            <input id="bookDate" type="date" value="${date}">
-          </label>
-
-          <label>
-            FLOOR
-            <select id="bookFloor">
-              ${floors.map(f => `
-                <option ${f.name === floor ? "selected" : ""}>${f.name}</option>
-              `).join("")}
-            </select>
-          </label>
-
-          <label>
-            ROOM
-            <select id="bookRoom">
-              ${[
-                ...getFloor(floor).classrooms,
-                ...getFloor(floor).labs,
-                ...getFloor(floor).seminars
-              ].map(r => `
-                <option ${r === room ? "selected" : ""}>${r}</option>
-              `).join("")}
-            </select>
-          </label>
-        </div>
-
-        <div class="panel">
-          <div class="panel-head">
-            <div>
-              <b>${room} · Daily Timeline</b>
-              <small>${roomType[room]} · Capacity ${roomCapacity[room]}</small>
-            </div>
-            <span class="tag">${date}</span>
-          </div>
-
-          <div class="timeline">${slots}</div>
-
-          <div class="timeline-legend">
-            <span><i class="green-dot"></i>Available</span>
-            <span><i class="red-dot"></i>Occupied / Requested</span>
-          </div>
-        </div>
-
-        <div class="section-title">
-          <div>
-            <h3>My booking requests</h3>
-            <p>Requests submitted from this browser.</p>
-          </div>
-        </div>
-
-        ${bookingTable(bookings.slice().reverse())}
-      </div>
-
-      <aside class="panel form-panel">
-        <small class="eyebrow">NEW REQUEST</small>
-        <h3>Book a space</h3>
-        <p>Fill in the details to request a room.</p>
-
-        <form id="bookingForm">
-          <label>
-            Event / class title
-            <input name="title" required placeholder="e.g. Robotics workshop">
-          </label>
-
-          <label>
-            Purpose and description
-            <textarea name="purpose" rows="3" required placeholder="Describe the activity"></textarea>
-          </label>
-
-          <div class="two">
-            <label>
-              Date
-              <input name="date" type="date" required value="${date}">
-            </label>
-
-            <label>
-              Participants
-              <input name="people" type="number" min="1" required placeholder="40">
-            </label>
-          </div>
-
-          <div class="two">
-            <label>
-              Start time
-              <select name="start">${timeChoices(start)}</select>
-            </label>
-
-            <label>
-              End time
-              <select name="end">${timeChoices(end)}</select>
-            </label>
-          </div>
-
-          <label>
-            Room
-            <select name="room">
-              ${allRooms.map(r => `
-                <option ${r === room ? "selected" : ""}>${r}</option>
-              `).join("")}
-            </select>
-          </label>
-
-          <label>
-            Equipment needed
-            <input name="equipment" placeholder="Projector, computers…">
-          </label>
-
-          <label>
-            Organizer name
-            <input name="organizer" required placeholder="Your name">
-          </label>
-
-          <label>
-            Contact email
-            <input name="email" type="email" required placeholder="name@example.com">
-          </label>
-
-          <div class="availability-result ${check.ok ? "good" : "bad"}" id="availabilityResult">
-            ${esc(check.reason)}
-          </div>
-
-          <button class="primary wide" type="submit">
-            Submit request →
-          </button>
-
-          <small class="hint">
-            Demo only — requests are saved in local browser storage.
-            Admin approval is not connected.
-          </small>
-        </form>
-      </aside>
-    </div>
-  `;
-}
-
-/* =========================================
-   BOOKING HELPERS
-========================================= */
-
-function timeChoices(selected) {
-  return [
-    "08:00", "09:00", "10:00", "11:00",
-    "11:20", "12:00", "12:20", "13:00",
-    "14:00", "14:10", "15:00", "15:50",
-    "16:00", "16:40", "17:00", "18:00"
-  ].map(t => `
-    <option ${t === selected ? "selected" : ""}>${t}</option>
-  `).join("");
-}
-
-function bookingTable(items) {
-  if (!items.length) {
-    return `<div class="empty">No booking requests yet. Submit one to get started.</div>`;
+onAuthStateChanged(auth, async user => {
+  if (!user) {
+    adminUser = null;
+    authReady = true;
+    if (page === "Admin") render();
+    return;
   }
 
-  return `
-    <div class="panel table-panel">
-      <div class="table-scroll">
-        <table>
-          <thead>
-            <tr>
-              <th>Event</th>
-              <th>Room</th>
-              <th>Date / Time</th>
-              <th>Status</th>
-              <th></th>
-            </tr>
-          </thead>
-
-          <tbody>
-            ${items.map(b => `
-              <tr>
-                <td>
-                  <b>${esc(b.title)}</b>
-                  <small>${esc(b.organizer)}</small>
-                </td>
-
-                <td>${esc(b.room)}</td>
-
-                <td>
-                  ${esc(b.date)}
-                  <small>${esc(b.start)} – ${esc(b.end)}</small>
-                </td>
-
-                <td>
-                  <span class="status ${b.status.toLowerCase()}">${esc(b.status)}</span>
-                </td>
-
-                <td>
-                  ${b.status === "Pending"
-                    ? `<button class="cancel" data-cancel="${b.id}">Cancel</button>`
-                    : ""}
-                </td>
-              </tr>
-            `).join("")}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  `;
-}
-
-/* =========================================
-   MAIN RENDER FUNCTION
-========================================= */
-
-function render() {
-  const content =
-    page === "Overview" ? overview() :
-    page === "Floor Plan" ? floorPlan() :
-    page === "Timetables" ? timetablePage() :
-    bookingPage();
-
-  header(content);
-
-  // Navigation buttons
-  document.querySelectorAll("[data-go]").forEach(b => {
-    b.onclick = () => {
-      page = b.dataset.go;
-      render();
-    };
-  });
-
-  // Floor tabs
-  document.querySelectorAll("[data-floor]").forEach(b => {
-    b.onclick = () => {
-      floorSelected = b.dataset.floor;
-      const f = getFloor(floorSelected);
-      roomSelected = f.classrooms[0] || f.labs[0] || f.seminars[0];
-      render();
-    };
-  });
-
-  // Room selection
-  document.querySelectorAll("[data-room]").forEach(b => {
-    b.onclick = () => {
-      roomSelected = b.dataset.room;
-      render();
-    };
-  });
-
-  // Digital Twin date and time
-  ["mapDate", "mapTime"].forEach(id => {
-    document.querySelector("#" + id)?.addEventListener("change", render);
-  });
-
-  // Digital Twin floor selector
-  document.querySelector("#mapFloor")?.addEventListener("change", e => {
-    floorSelected = e.target.value;
-
-    const f = getFloor(floorSelected);
-    roomSelected = f.classrooms[0] || f.labs[0] || f.seminars[0];
-
-    render();
-  });
-
-  // Timetable selector
-  document.querySelector("#classSelect")?.addEventListener("change", e => {
-    classSelected = e.target.value;
-    render();
-  });
-
-  // Booking form
-  wireBooking();
-
-  // Cancel booking requests
-  document.querySelectorAll("[data-cancel]").forEach(b => {
-    b.onclick = () => {
-      const id = Number(b.dataset.cancel);
-
-      bookings = bookings.map(x =>
-        x.id === id ? { ...x, status: "Rejected" } : x
-      );
-
-      save();
-      render();
-    };
-  });
-
-  // Card hover tilt
-  document.querySelectorAll(".stat, .quick-grid button, .room").forEach(card => {
-    card.addEventListener("mousemove", e => {
-      const rect = card.getBoundingClientRect();
-      const x = (e.clientX - rect.left) / rect.width - 0.5;
-      const y = (e.clientY - rect.top) / rect.height - 0.5;
-
-      card.style.transform =
-        `perspective(600px) rotateY(${x * 6}deg) rotateX(${-y * 6}deg) scale(1.02)`;
-    });
-
-    card.addEventListener("mouseleave", () => {
-      card.style.transform = "";
-    });
-  });
-}
-
-/* =========================================
-   BOOKING EVENT HANDLERS
-========================================= */
-
-function wireBooking() {
-  ["bookDate", "bookFloor", "bookRoom", "bookStart", "bookEnd"].forEach(id => {
-    document.querySelector("#" + id)?.addEventListener("change", () => {
-      if (id === "bookFloor") {
-        const f = getFloor(document.querySelector("#bookFloor").value);
-
-        document.querySelector("#bookRoom").innerHTML = [
-          ...f.classrooms,
-          ...f.labs,
-          ...f.seminars
-        ].map(r => `<option>${r}</option>`).join("");
-      }
-
-      render();
-    });
-  });
-
-  document.querySelector("#bookingForm")?.addEventListener("submit", e => {
-    e.preventDefault();
-
-    const data = new FormData(e.target);
-    const b = Object.fromEntries(data.entries());
-
-    b.people = Number(b.people);
-    b.id = Date.now();
-    b.status = "Pending";
-
-    if (b.end <= b.start) {
-      alert("End time must be later than start time.");
+  try {
+    const roleSnap = await getDoc(doc(db, "user", user.uid));
+    if (!roleSnap.exists() || roleSnap.data().role !== "admin") {
+      await signOut(auth);
+      adminUser = null;
       return;
     }
-
-    if (b.people > roomCapacity[b.room]) {
-      alert(`This room capacity is ${roomCapacity[b.room]}.`);
-      return;
-    }
-
-    const result = availability(b.room, b.date, b.start, b.end);
-
-    if (!result.ok) {
-      alert(result.reason);
-      return;
-    }
-
-    bookings.push(b);
-    save();
-
-    alert("Booking request submitted. Status: Pending.");
-    render();
-  });
-}
-
-/* =========================================
-   START APPLICATION
-========================================= */
+    adminUser = user;
+  } catch (err) {
+    adminUser = null;
+    console.error("Admin auth validation failed:", err);
+  } finally {
+    authReady = true;
+    if (page === "Admin") render();
+  }
+});
 
 render();
