@@ -1,5 +1,11 @@
 
 import "./style.css";
+import { auth, db } from "./firebase.js";
+import {
+  setPersistence, inMemoryPersistence, signInWithEmailAndPassword,
+  signOut, onAuthStateChanged
+} from "firebase/auth";
+import { doc, getDoc } from "firebase/firestore";
 
 /* CAMPUS INVENTORY */
 const floors = [
@@ -96,10 +102,15 @@ if(savedTimetable){
  Object.assign(timetable,savedTimetable);
 }
 
-let page="Overview";
+let page=sessionStorage.getItem("cc_admin_route_requested")==="1"?"Admin":"Overview";
+let adminUser = null;
+let authReady = false;
+let authMessage = "";
 let floorSelected="Ground";
 let roomSelected="LH001";
 let classSelected="1A";
+let availabilityDate=today();
+let availabilityPeriod=0;
 
 let maintenanceRooms=JSON.parse(localStorage.getItem("cc_maintenance_v1")||"[]");
 let adminSection="1A";
@@ -191,8 +202,9 @@ function header(content){
    </nav>
 
    <div class="profile">
-    <div class="avatar">AD</div>
-    <div><b>Demo Admin</b><small>Administrator</small></div>
+    <div class="avatar">${adminUser?"AD":"CC"}</div>
+    <div><b>${adminUser ? esc(adminUser.email) : "Campus user"}</b><small>${adminUser ? "Administrator" : "Student / Faculty"}</small></div>
+    ${adminUser ? `<button class="logout-btn" id="adminLogout" type="button">Log out</button>` : ""}
    </div>
   </aside>
 
@@ -211,7 +223,7 @@ function header(content){
  </div>`;
 
  document.querySelectorAll("[data-page]").forEach(b=>{
-  b.onclick=()=>{page=b.dataset.page;render()};
+  b.onclick=()=>{page=b.dataset.page;if(page==="Admin")sessionStorage.setItem("cc_admin_route_requested","1");else sessionStorage.removeItem("cc_admin_route_requested");render()};
  });
 }
 
@@ -232,7 +244,7 @@ function overview(){
    <small>CAMPUS AT A GLANCE</small>
    <h2>Find your space.<br>Plan your day.</h2>
    <p>Explore rooms across four floors, view class schedules, and request spaces — all in one place.</p>
-   <button class="primary" data-go="Booking Requests">＋ Request a room</button>
+   <div class="hero-actions"><button class="primary" data-go="Availability Map">⌕ Search Available Class</button><button class="primary" data-go="Booking Requests">＋ Request a room</button></div>
   </div>
   <div class="hero-art">◈</div>
  </div>
@@ -249,6 +261,7 @@ function overview(){
   <button data-go="Floor Plan"><b>⌂ Floor plan</b><span>Browse all ${allRooms.length} spaces</span></button>
   <button data-go="Timetables"><b>▤ Class timetables</b><span>16 section-wise weekly schedules</span></button>
   <button data-go="Booking Requests"><b>＋ Booking requests</b><span>Check availability and request rooms</span></button>
+  <button data-go="Availability Map"><b>⌕ Search available class</b><span>Find free classrooms across all four floors</span></button>
  </div>
 
  <div class="section-title"><div><h3>Recent requests</h3><p>Latest booking activity.</p></div></div>
@@ -289,6 +302,40 @@ function floorPlan(){
    <button class="primary wide" data-go="Booking Requests">Check availability →</button>
   </aside>
  </div>`;
+}
+
+
+/* SEARCH AVAILABLE CLASS / FLOOR AVAILABILITY MAP */
+function availabilityMap(){
+ const period=periods[availabilityPeriod]||periods[0];
+ const counts=floors.map(f=>({name:f.name,count:f.classrooms.filter(r=>availability(r,availabilityDate,period.start,period.end).ok).length,total:f.classrooms.length}));
+ const selected=getFloor(floorSelected);
+ const rooms=selected.classrooms.map(room=>({room,...availability(room,availabilityDate,period.start,period.end)}));
+ const dateLabel=new Date(availabilityDate+"T12:00:00").toLocaleDateString("en-IN",{weekday:"long",day:"numeric",month:"long",year:"numeric"});
+ return `
+  <div class="availability-heading">
+   <div><span class="eyebrow">CAMPUS CLASSROOM FINDER</span><h2>Find an available classroom</h2><p>Choose a date and class period. Green rooms are available; red rooms are occupied or unavailable.</p></div>
+   <div class="availability-date">
+  <span>SELECTED DATE & TIME</span>
+  <b>📅 Date: ${dateLabel}</b>
+  <b>🕒 Time: ${period.start} - ${period.end}</b>
+</div>
+  </div>
+  <div class="panel availability-search-panel">
+   <label>DATE<input id="availabilityDate" type="date" value="${availabilityDate}"></label>
+   <label>TIME SLOT<select id="availabilityPeriod">${periods.map((p,i)=>`<option value="${i}" ${i===availabilityPeriod?"selected":""}>${p.label}</option>`).join("")}</select></label>
+   <button class="primary" id="runAvailabilitySearch">Search classrooms</button>
+  </div>
+  <div class="floor-count-grid">
+   ${counts.map(x=>`<button class="floor-count-card ${x.name===floorSelected?"selected":""}" data-availability-floor="${x.name}"><span>${x.name} Floor</span><b>${x.count}</b><small>of ${x.total} classrooms available</small><i>${x.count} available</i></button>`).join("")}
+  </div>
+  <div class="section-title"><div><h3>${selected.name} Floor · Classroom map</h3><p>${dateLabel} · ${period.label}</p></div><span class="tag">${rooms.filter(x=>x.ok).length} AVAILABLE</span></div>
+  <div class="availability-legend"><span><i class="legend-green"></i>Available</span><span><i class="legend-red"></i>Occupied / unavailable</span></div>
+  <div class="availability-room-grid">
+   ${rooms.map(x=>`<button class="availability-room ${x.ok?"available":"occupied"}" data-availability-room="${x.room}" title="${esc(x.reason)}"><b>${x.room}</b><span>${x.ok?"Available":"Occupied"}</span><small>${x.ok?"Ready to request":"Not free in this slot"}</small></button>`).join("")}
+  </div>
+  <p class="hint">Availability is calculated from the current timetable, booking requests and maintenance records. RFID occupancy can be connected later when the hardware is available.</p>
+ `;
 }
 
 /* TIMETABLE */
@@ -411,6 +458,56 @@ function bookingTable(items){
  </table></div></div>`;
 }
 
+/* ADMIN AUTHENTICATION */
+function adminLoginPage(){
+ return `
+ <div class="auth-wrap">
+  <div class="auth-card">
+   <div class="auth-mark">C</div>
+   <div class="auth-eyebrow">CAMPUSCLASS · SECURE ACCESS</div>
+   <h2>Administrator sign in</h2>
+   <p>Sign in with your authorized administrator account to manage campus rooms, timetables and booking requests.</p>
+   <form id="adminLoginForm" class="auth-form">
+    <label>EMAIL ADDRESS<input name="email" type="email" autocomplete="username" placeholder="admin@college.edu" required></label>
+    <label>PASSWORD<input name="password" type="password" autocomplete="current-password" placeholder="Enter your password" required></label>
+    <div class="auth-error" id="authError" role="alert">${esc(authMessage)}</div>
+    <button class="primary wide" type="submit">Sign in to Admin</button>
+   </form>
+   <button class="auth-back" type="button" data-go="Overview">← Back to CampusClass</button>
+   <small class="auth-note">Your account must have the admin role assigned in Firestore.</small>
+  </div>
+ </div>`;
+}
+
+async function handleAdminLogin(form){
+ const button=form.querySelector('button[type="submit"]');
+ const error=document.querySelector("#authError");
+ const data=Object.fromEntries(new FormData(form).entries());
+ button.disabled=true; button.textContent="Verifying…"; error.textContent="";
+ try{
+  // In-memory persistence deliberately requires sign-in again after a page refresh.
+  await setPersistence(auth, inMemoryPersistence);
+  const credential=await signInWithEmailAndPassword(auth,data.email.trim(),data.password);
+  const roleSnap=await getDoc(doc(db,"user",credential.user.uid));
+  if(!roleSnap.exists() || roleSnap.data().role!=="admin"){
+   await signOut(auth);
+   throw new Error("This account is not authorized as an administrator.");
+  }
+  adminUser=credential.user;
+  authMessage="";
+  sessionStorage.setItem("cc_admin_route_requested","1");
+  page="Admin";
+  render();
+ }catch(err){
+  error.textContent=err.code==="auth/invalid-credential" || err.code==="auth/wrong-password"
+   ? "Incorrect email or password."
+   : err.code==="auth/too-many-requests"
+    ? "Too many attempts. Please try again later."
+    : err.message || "Unable to sign in. Please try again.";
+  button.disabled=false; button.textContent="Sign in to Admin";
+ }
+}
+
 /* ADMIN DASHBOARD */
 function adminPage(){
  const pending=bookings.filter(b=>b.status==="Pending");
@@ -421,7 +518,7 @@ function adminPage(){
  return `
  <div class="section-title">
   <div><h3>Campus administration</h3><p>Manage bookings, academic schedules and room operations.</p></div>
-  <span class="tag">ADMIN CONSOLE</span>
+  <div class="admin-top-actions"><span class="tag">ADMIN CONSOLE</span><button class="logout-inline" id="adminLogoutTop" type="button">Sign out</button></div>
  </div>
 
  <div class="stats">
@@ -599,17 +696,40 @@ function wireBooking(){
 
 /* MAIN RENDER */
 function render(){
+ if(page==="Admin" && !adminUser){
+  header(adminLoginPage());
+  document.querySelector("#adminLoginForm")?.addEventListener("submit",e=>{
+   e.preventDefault(); handleAdminLogin(e.currentTarget);
+  });
+  document.querySelectorAll("[data-go]").forEach(b=>b.onclick=()=>{page=b.dataset.go;render()});
+  return;
+ }
  const content=page==="Overview"?overview()
   :page==="Floor Plan"?floorPlan()
+  :page==="Availability Map"?availabilityMap()
   :page==="Timetables"?timetablePage()
   :page==="Admin"?adminPage()
   :bookingPage();
 
  header(content);
 
+ const logout=async()=>{
+  try{ await signOut(auth); } finally { adminUser=null; sessionStorage.removeItem("cc_admin_route_requested"); page="Overview"; render(); }
+ };
+ document.querySelector("#adminLogout")?.addEventListener("click",logout);
+ document.querySelector("#adminLogoutTop")?.addEventListener("click",logout);
+
  document.querySelectorAll("[data-go]").forEach(b=>{
-  b.onclick=()=>{page=b.dataset.go;render()};
+  b.onclick=()=>{page=b.dataset.go;if(page==="Admin")sessionStorage.setItem("cc_admin_route_requested","1");else sessionStorage.removeItem("cc_admin_route_requested");render()};
  });
+
+ document.querySelector("#runAvailabilitySearch")?.addEventListener("click",()=>{
+  availabilityDate=document.querySelector("#availabilityDate").value||today();
+  availabilityPeriod=Number(document.querySelector("#availabilityPeriod").value)||0;
+  render();
+ });
+ document.querySelectorAll("[data-availability-floor]").forEach(b=>b.onclick=()=>{floorSelected=b.dataset.availabilityFloor;render()});
+ document.querySelectorAll("[data-availability-room]").forEach(b=>b.onclick=()=>{roomSelected=b.dataset.availabilityRoom;page="Floor Plan";floorSelected=roomFloor[roomSelected];render()});
 
  document.querySelectorAll("[data-floor]").forEach(b=>{
   b.onclick=()=>{
@@ -640,5 +760,30 @@ function render(){
   };
  });
 }
+
+onAuthStateChanged(auth, async user => {
+  if (!user) {
+    adminUser = null;
+    authReady = true;
+    if (page === "Admin") render();
+    return;
+  }
+
+  try {
+    const roleSnap = await getDoc(doc(db, "user", user.uid));
+    if (!roleSnap.exists() || roleSnap.data().role !== "admin") {
+      await signOut(auth);
+      adminUser = null;
+      return;
+    }
+    adminUser = user;
+  } catch (err) {
+    adminUser = null;
+    console.error("Admin auth validation failed:", err);
+  } finally {
+    authReady = true;
+    if (page === "Admin") render();
+  }
+});
 
 render();
